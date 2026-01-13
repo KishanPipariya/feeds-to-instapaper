@@ -32,7 +32,7 @@ Example:
 
 ```
 [instapaper]
-username = "your-username"
+username = "your-email"
 password = "your-password"
 
 [feeds]
@@ -51,7 +51,7 @@ The following sections are supported:
 	Instapaper credentials.
 
 	*username* <string>
-		Your Instapaper username. This is required.
+		Your Instapaper email. This is required.
 
 	*password* <string>
 		Your Instapaper password. This is required.

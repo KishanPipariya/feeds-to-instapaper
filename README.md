@@ -14,7 +14,7 @@ Create a configuration file at `~/.config/feeds-to-instapaper/config.toml`:
 
 ```toml
 [instapaper]
-username = "your-instapaper-username"
+username = "your-instapaper-email"
 password = "your-instapaper-password"
 
 [feeds]
