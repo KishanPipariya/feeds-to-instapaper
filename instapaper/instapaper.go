@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const maxErrorResponseBytes = 64 * 1024
+
 type Instapaper struct {
 	username string
 	password string
@@ -46,14 +48,28 @@ func (api *Instapaper) Add(link, title string) error {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, truncated, err := readErrorBody(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
+		if truncated {
+			return fmt.Errorf("Instapaper API error (status %d): %s [truncated]", resp.StatusCode, string(body))
+		}
 		return fmt.Errorf("Instapaper API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
 	return nil
+}
+
+func readErrorBody(body io.Reader) ([]byte, bool, error) {
+	limited := io.LimitReader(body, maxErrorResponseBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(data) > maxErrorResponseBytes {
+		return data[:maxErrorResponseBytes], true, nil
+	}
+	return data, false, nil
 }

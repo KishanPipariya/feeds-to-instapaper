@@ -17,7 +17,7 @@ func TestSuccess(t *testing.T) {
 	conf := config.Hooks{
 		NewArticle: []config.Hook{
 			{
-				Spawn: []string{"sh", "-c", fmt.Sprintf("echo -n {{.Feed.Title}}, {{.Feed.Link}}, {{.Title}} > %s", file)},
+				Spawn: []string{"sh", "-c", fmt.Sprintf("printf '%%s' \"{{.Feed.Title}}, {{.Feed.Link}}, {{.Title}}\" > %s", file)},
 			},
 		},
 	}
