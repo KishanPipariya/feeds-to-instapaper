@@ -7,13 +7,13 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kupospelov/feeds-to-instapaper/config"
 	"github.com/kupospelov/feeds-to-instapaper/hooks"
 	"github.com/kupospelov/feeds-to-instapaper/instapaper"
 	"github.com/kupospelov/feeds-to-instapaper/processor"
 	"github.com/kupospelov/feeds-to-instapaper/state"
-	"github.com/mmcdole/gofeed"
 )
 
 func scheduleSave(state *state.State) func() {
@@ -59,7 +59,7 @@ func main() {
 		defer save()
 	}
 
-	parser := gofeed.NewParser()
+	parser := processor.NewFeedParser(time.Duration(config.Feeds.RequestTimeoutSeconds)*time.Second, config.Feeds.MaxResponseBytes)
 	instapaper := instapaper.New(config.Instapaper.Username, config.Instapaper.Password)
 
 	hooks, err := hooks.New(config.Hooks)
@@ -67,7 +67,7 @@ func main() {
 		log.Fatalf("Failed to create hooks: %v", err)
 	}
 
-	proc := processor.New(parser, instapaper, hooks, state, *dryRun)
+	proc := processor.NewWithLimits(parser, instapaper, hooks, state, *dryRun, config.Feeds.MaxConcurrency, config.Feeds.MaxItems)
 
 	err = proc.ProcessFeeds(config.Feeds.URLs)
 	if err != nil {

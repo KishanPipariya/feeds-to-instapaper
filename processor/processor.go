@@ -1,7 +1,11 @@
 package processor
 
 import (
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -9,6 +13,8 @@ import (
 	"github.com/kupospelov/feeds-to-instapaper/state"
 	"github.com/mmcdole/gofeed"
 )
+
+var ErrResponseTooLarge = errors.New("feed response exceeds configured size limit")
 
 type Parser interface {
 	ParseURL(feedURL string) (*gofeed.Feed, error)
@@ -23,21 +29,86 @@ type Hooks interface {
 }
 
 type Processor struct {
-	parser     Parser
-	instapaper Instapaper
-	hooks      Hooks
-	state      *state.State
-	dryRun     bool
+	parser         Parser
+	instapaper     Instapaper
+	hooks          Hooks
+	state          *state.State
+	dryRun         bool
+	maxConcurrency int
+	maxItems       int
 }
 
 func New(parser Parser, instapaper Instapaper, hooks Hooks, state *state.State, dryRun bool) *Processor {
-	return &Processor{
-		parser:     parser,
-		instapaper: instapaper,
-		hooks:      hooks,
-		state:      state,
-		dryRun:     dryRun,
+	return NewWithLimits(parser, instapaper, hooks, state, dryRun, 1, 1000)
+}
+
+func NewWithLimits(parser Parser, instapaper Instapaper, hooks Hooks, state *state.State, dryRun bool, maxConcurrency, maxItems int) *Processor {
+	if maxConcurrency < 1 {
+		maxConcurrency = 1
 	}
+	if maxItems < 1 {
+		maxItems = 1
+	}
+	return &Processor{
+		parser:         parser,
+		instapaper:     instapaper,
+		hooks:          hooks,
+		state:          state,
+		dryRun:         dryRun,
+		maxConcurrency: maxConcurrency,
+		maxItems:       maxItems,
+	}
+}
+
+// NewFeedParser creates a gofeed parser whose requests have both time and body-size bounds.
+func NewFeedParser(timeout time.Duration, maxResponseBytes int64) *gofeed.Parser {
+	parser := gofeed.NewParser()
+	parser.Client = &http.Client{
+		Timeout:   timeout,
+		Transport: responseLimitTransport{base: http.DefaultTransport, maxBytes: maxResponseBytes},
+	}
+	return parser
+}
+
+type responseLimitTransport struct {
+	base     http.RoundTripper
+	maxBytes int64
+}
+
+func (t responseLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &limitedReadCloser{ReadCloser: resp.Body, maxBytes: t.maxBytes}
+	return resp, nil
+}
+
+type limitedReadCloser struct {
+	io.ReadCloser
+	maxBytes, read int64
+}
+
+func (r *limitedReadCloser) Read(p []byte) (int, error) {
+	if r.read < r.maxBytes {
+		remaining := r.maxBytes - r.read
+		if int64(len(p)) > remaining {
+			p = p[:remaining]
+		}
+		n, err := r.ReadCloser.Read(p)
+		r.read += int64(n)
+		return n, err
+	}
+	var one [1]byte
+	n, err := r.ReadCloser.Read(one[:])
+	if n > 0 {
+		return 0, fmt.Errorf("%w (%d bytes)", ErrResponseTooLarge, r.maxBytes)
+	}
+	return 0, err
 }
 
 func (p *Processor) ProcessFeeds(feedURLs []string) error {
@@ -50,27 +121,38 @@ func (p *Processor) ProcessFeeds(feedURLs []string) error {
 		item *gofeed.Item
 	}
 	itemsChan := make(chan feedItem)
+	jobs := make(chan string)
 	var wg sync.WaitGroup
 
-	for _, feedURL := range feedURLs {
+	workerCount := min(p.maxConcurrency, len(feedURLs))
+	for range workerCount {
 		wg.Add(1)
-		go func(url string) {
+		go func() {
 			defer wg.Done()
+			for url := range jobs {
+				feed, err := p.parser.ParseURL(url)
+				if err != nil {
+					log.Printf("Error parsing feed %s: %v", url, err)
+					continue
+				}
+				if len(feed.Items) > p.maxItems {
+					log.Printf("Rejecting feed %s: contains %d items, limit is %d", url, len(feed.Items), p.maxItems)
+					continue
+				}
 
-			feed, err := p.parser.ParseURL(url)
-			if err != nil {
-				log.Printf("Error parsing feed %s: %v", url, err)
-				return
-			}
-
-			for _, item := range feed.Items {
-				if p.state.MarkProcessed(item.Link) {
-					itemsChan <- feedItem{feed, item}
+				for _, item := range feed.Items {
+					if p.state.MarkProcessed(item.Link) {
+						itemsChan <- feedItem{feed, item}
+					}
 				}
 			}
-		}(feedURL)
+		}()
 	}
 	go func() {
+		for _, feedURL := range feedURLs {
+			jobs <- feedURL
+		}
+		close(jobs)
 		wg.Wait()
 		close(itemsChan)
 	}()

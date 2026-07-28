@@ -3,6 +3,11 @@ package processor
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +17,25 @@ import (
 
 type parser struct {
 	feeds map[string]*gofeed.Feed
+}
+
+type trackingParser struct {
+	active    int32
+	maxActive int32
+	feed      *gofeed.Feed
+}
+
+func (p *trackingParser) ParseURL(string) (*gofeed.Feed, error) {
+	active := atomic.AddInt32(&p.active, 1)
+	for {
+		max := atomic.LoadInt32(&p.maxActive)
+		if active <= max || atomic.CompareAndSwapInt32(&p.maxActive, max, active) {
+			break
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	atomic.AddInt32(&p.active, -1)
+	return p.feed, nil
 }
 
 func (p *parser) ParseURL(feedURL string) (*gofeed.Feed, error) {
@@ -278,4 +302,61 @@ func TestDryRun(t *testing.T) {
 	if testState.MarkProcessed("http://example.com/2") {
 		t.Errorf("Expected 'http://example.com/2' to have been marked as processed")
 	}
+}
+
+func TestProcessFeedsCapsConcurrency(t *testing.T) {
+	testParser := &trackingParser{feed: &gofeed.Feed{Items: []*gofeed.Item{}}}
+	testState := state.EmptyWithPath("test")
+	proc := NewWithLimits(testParser, &instapaper{}, &hooks{}, testState, false, 2, 1000)
+	if err := proc.ProcessFeeds([]string{"1", "2", "3", "4", "5"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&testParser.maxActive); got > 2 {
+		t.Fatalf("concurrency = %d, want at most 2", got)
+	}
+}
+
+func TestProcessFeedsRejectsOversizedItemBatch(t *testing.T) {
+	feed := &gofeed.Feed{Link: "feed", Items: []*gofeed.Item{{Link: "one"}, {Link: "two"}, {Link: "three"}}}
+	testState := state.EmptyWithPath("test")
+	testInstapaper := &instapaper{}
+	proc := NewWithLimits(createParser([]*gofeed.Feed{feed}), testInstapaper, &hooks{}, testState, false, 1, 2)
+	if err := proc.ProcessFeeds([]string{"feed"}); err != nil {
+		t.Fatal(err)
+	}
+	testInstapaper.assertAddedItems(t, nil)
+	assertNewStateItems(t, testState, nil)
+	if !testState.MarkProcessed("one") {
+		t.Fatal("oversized feed item was marked processed")
+	}
+}
+
+func TestFeedParserTimeoutAndResponseLimit(t *testing.T) {
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(100 * time.Millisecond)
+			w.Write([]byte("<rss version=\"2.0\"><channel></channel></rss>"))
+		}))
+		defer server.Close()
+		_, err := NewFeedParser(10*time.Millisecond, 1024).ParseURL(server.URL)
+		if err == nil {
+			t.Fatal("expected timeout")
+		}
+	})
+	t.Run("response limit", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(strings.Repeat("x", 1024)))
+		}))
+		defer server.Close()
+		client := &http.Client{Transport: responseLimitTransport{base: http.DefaultTransport, maxBytes: 64}}
+		response, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		_, err = io.ReadAll(response.Body)
+		if err == nil || !errors.Is(err, ErrResponseTooLarge) {
+			t.Fatalf("expected response-size error, got %v", err)
+		}
+	})
 }
