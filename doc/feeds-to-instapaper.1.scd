@@ -40,6 +40,10 @@ urls = [
   "https://example.com/feed.xml",
   "https://another.org/rss.xml"
 ]
+max_concurrency = 4
+request_timeout_seconds = 30
+max_response_bytes = 10485760
+max_items = 1000
 
 [[hooks.new_article]]
 spawn = ["notify-send", "New article on {{.Feed.Title}}", "{{.Title}}"]
@@ -61,6 +65,20 @@ The following sections are supported:
 
 	*urls* <array of strings>
 		A list of RSS/Atom feed URLs to process.
+
+	*max_concurrency* <integer>
+		Maximum number of feeds fetched concurrently. Defaults to 4.
+
+	*request_timeout_seconds* <integer>
+		Maximum duration of an individual feed request. Defaults to 30.
+
+	*max_response_bytes* <integer>
+		Maximum response size allowed for an individual feed. Defaults to
+		10485760 (10 MiB).
+
+	*max_items* <integer>
+		Maximum number of items allowed in an individual feed. Defaults to
+		1000. Feeds exceeding this limit are rejected entirely.
 
 *[hooks]*
 	Hooks to run on events.
