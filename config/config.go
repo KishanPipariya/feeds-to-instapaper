@@ -33,7 +33,7 @@ const (
 	DefaultMaxConcurrency        = 4
 	DefaultRequestTimeoutSeconds = 30
 	DefaultMaxResponseBytes      = 10 * 1024 * 1024
-	DefaultMaxItems              = 1000
+	DefaultMaxItems              = 20
 )
 
 type Config struct {

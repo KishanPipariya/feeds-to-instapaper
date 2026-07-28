@@ -316,18 +316,22 @@ func TestProcessFeedsCapsConcurrency(t *testing.T) {
 	}
 }
 
-func TestProcessFeedsRejectsOversizedItemBatch(t *testing.T) {
-	feed := &gofeed.Feed{Link: "feed", Items: []*gofeed.Item{{Link: "one"}, {Link: "two"}, {Link: "three"}}}
+func TestProcessFeedsKeepsMostRecentItemsFromOversizedBatch(t *testing.T) {
+	feed := &gofeed.Feed{Link: "feed", Items: []*gofeed.Item{
+		{Link: "one", PublishedParsed: parseTime("1:00PM")},
+		{Link: "three", PublishedParsed: parseTime("3:00PM")},
+		{Link: "two", PublishedParsed: parseTime("2:00PM")},
+	}}
 	testState := state.EmptyWithPath("test")
 	testInstapaper := &instapaper{}
 	proc := NewWithLimits(createParser([]*gofeed.Feed{feed}), testInstapaper, &hooks{}, testState, false, 1, 2)
 	if err := proc.ProcessFeeds([]string{"feed"}); err != nil {
 		t.Fatal(err)
 	}
-	testInstapaper.assertAddedItems(t, nil)
-	assertNewStateItems(t, testState, nil)
+	testInstapaper.assertAddedItems(t, []addedItem{{link: "two"}, {link: "three"}})
+	assertNewStateItems(t, testState, []string{"two", "three"})
 	if !testState.MarkProcessed("one") {
-		t.Fatal("oversized feed item was marked processed")
+		t.Fatal("older item was marked processed")
 	}
 }
 

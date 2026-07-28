@@ -43,7 +43,7 @@ urls = [
 max_concurrency = 4
 request_timeout_seconds = 30
 max_response_bytes = 10485760
-max_items = 1000
+max_items = 20
 
 [[hooks.new_article]]
 spawn = ["notify-send", "New article on {{.Feed.Title}}", "{{.Title}}"]
@@ -78,7 +78,8 @@ The following sections are supported:
 
 	*max_items* <integer>
 		Maximum number of items allowed in an individual feed. Defaults to
-		1000. Feeds exceeding this limit are rejected entirely.
+		20. When a feed exceeds this limit, only its most recently published
+		items are processed.
 
 *[hooks]*
 	Hooks to run on events.

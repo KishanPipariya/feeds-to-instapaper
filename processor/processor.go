@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kupospelov/feeds-to-instapaper/config"
 	"github.com/kupospelov/feeds-to-instapaper/state"
 	"github.com/mmcdole/gofeed"
 )
@@ -39,7 +40,7 @@ type Processor struct {
 }
 
 func New(parser Parser, instapaper Instapaper, hooks Hooks, state *state.State, dryRun bool) *Processor {
-	return NewWithLimits(parser, instapaper, hooks, state, dryRun, 1, 1000)
+	return NewWithLimits(parser, instapaper, hooks, state, dryRun, 1, config.DefaultMaxItems)
 }
 
 func NewWithLimits(parser Parser, instapaper Instapaper, hooks Hooks, state *state.State, dryRun bool, maxConcurrency, maxItems int) *Processor {
@@ -135,12 +136,13 @@ func (p *Processor) ProcessFeeds(feedURLs []string) error {
 					log.Printf("Error parsing feed %s: %v", url, err)
 					continue
 				}
-				if len(feed.Items) > p.maxItems {
-					log.Printf("Rejecting feed %s: contains %d items, limit is %d", url, len(feed.Items), p.maxItems)
-					continue
+				items := feed.Items
+				if len(items) > p.maxItems {
+					items = mostRecentItems(items, p.maxItems)
+					log.Printf("Feed %s contains %d items; processing the %d most recent", url, len(feed.Items), len(items))
 				}
 
-				for _, item := range feed.Items {
+				for _, item := range items {
 					if p.state.MarkProcessed(item.Link) {
 						itemsChan <- feedItem{feed, item}
 					}
@@ -190,4 +192,19 @@ func (p *Processor) ProcessFeeds(feedURLs []string) error {
 	}
 
 	return nil
+}
+
+func mostRecentItems(items []*gofeed.Item, limit int) []*gofeed.Item {
+	selected := append([]*gofeed.Item(nil), items...)
+	slices.SortStableFunc(selected, func(a, b *gofeed.Item) int {
+		return publicationTime(b).Compare(publicationTime(a))
+	})
+	return selected[:limit]
+}
+
+func publicationTime(item *gofeed.Item) time.Time {
+	if item.PublishedParsed != nil {
+		return *item.PublishedParsed
+	}
+	return time.Time{}
 }
